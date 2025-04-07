@@ -1,0 +1,41 @@
+library(phyloseq)
+library(dada2)
+library(microbiome)
+library(microViz)
+library(tidyverse)
+library(ggplot2)
+library(ggrepel)
+library(speedyseq)
+library(lessR)
+library(vegan)
+library(mia)
+library(ggtree)
+library(Maaslin2)
+
+problem_samps <- c("2H5C", "3H1C")
+
+ps_gom <- readRDS("ps_finally.rds") %>% 
+  subset_taxa(!Kingdom %in% "Unassigned") %>%
+  subset_taxa(!Class %in% "Cyanobacteriia") %>% 
+  subset_samples(!name %in% problem_samps) %>% tax_filter()
+gom_meta <- data.frame(ps_gom@sam_data)
+colnames(ps_gom@otu_table) <- as.numeric(round(gom_meta$depthoncenter))
+rownames(ps_gom@sam_data) <- as.numeric(round(gom_meta$depthoncenter))
+rownames(ps_gom@sam_data) == colnames(ps_gom@otu_table) #all match
+gom_all_ASVs <- lessR::to("ASV", nrow(ps_gom@tax_table))
+ps_gom <- ps_gom %>% mutate_tax_table(Species = gom_all_ASVs)
+
+gom_taxa <- data.frame(ps_gom@tax_table) %>% 
+  mutate(Genus_b = Genus) %>% 
+  unite(Species, Genus_b, Species, sep = "_")
+
+ps_gom <- phyloseq(otu_table(ps_gom@otu_table), 
+                   tax_table(as.matrix(gom_taxa)), 
+                   sample_data(ps_gom@sam_data), 
+                   phy_tree(ps_gom@phy_tree)) %>% 
+  mutate_tax_table(across(Kingdom:Species, str_replace, "d__", "Unknown ")) %>% 
+  mutate_tax_table(across(Kingdom:Species, str_replace, "Kingdom", ""))
+                                        
+ps_gom_rare <- ps_gom %>% 
+  rarefy_even_depth(sample.size = 1208, rngseed = 1099, 
+                    replace = F) #drops 3837 ASVs 
