@@ -11,7 +11,9 @@ library(vegan)
 library(mia)
 library(ggtree)
 library(Maaslin2)
+library(scico)
 
+###Setting up Phyloseq object
 problem_samps <- c("2H5C", "3H1C")
 
 ps_gom <- readRDS("ps_finally.rds") %>% 
@@ -39,3 +41,228 @@ ps_gom <- phyloseq(otu_table(ps_gom@otu_table),
 ps_gom_rare <- ps_gom %>% 
   rarefy_even_depth(sample.size = 1208, rngseed = 1099, 
                     replace = F) #drops 3837 ASVs 
+
+
+###NMDS plot with envfit vectors
+set.seed(1099)
+bray_ord_gom <- ordinate(ps_gom_rare, method = "NMDS", distance = "bray")
+print(bray_ord_gom)
+level_gom <- microbiome::aggregate_taxa(ps_gom_rare, "Phylum")
+level <- t(as.data.frame(otu_table(level_gom)))
+meta.tax <- cbind(data.frame(level_gom@sam_data), level)
+meta.tax <- meta.tax %>% dplyr::rename(Porosity = porosity)
+
+meta.tax <- meta.tax %>% 
+  mutate(Geological_Age = geoAge, 
+         Depth = depthoncenter) %>% 
+  select(-geoAge, -depthoncenter)
+
+set.seed(1998)
+en.fit <- envfit(bray_ord_gom, 
+                 meta.tax, permutations = 999, na.rm = T)
+
+en <- as.list(en.fit$vectors)
+pvals.en <- as.data.frame(en$pvals)
+arrows.en <- as.data.frame(en$arrows*sqrt(en$r))
+C.en <- cbind(arrows.en, pvals.en)
+Cred.en <- subset(C.en, pvals.en<0.05)
+Cred.en$"Variable" <- rownames(Cred.en)
+Cred.en <- Cred.en[order(Cred.en$`en$pvals`, decreasing = F),]
+
+data.scores.16S <- vegan::scores(bray_ord_gom)
+data.scores.16S <- data.frame(data.scores.16S$sites)
+data.scores.16S$"Depth" <- meta.tax$Depth
+data.scores.16S <- data.scores.16S %>% mutate(Depth = round(Depth))
+data.scores.16S$"Porosity" <- meta.tax$porosity
+data.scores.16S$"Sediment_Layer" <- meta.tax$smtzloc
+data.scores.16S$Sediment_Layer <- factor(data.scores.16S$Sediment_Layer, 
+                                         levels = c("ASMTZ", "SMTZ", "BSMTZ", 
+                                                    "GHSZ", "HYDRATE"))
+data.scores.16S$"Geological_Age" <- meta.tax$Geological_Age
+data.scores.16S$"C1C2" <- meta.tax$C1C2
+data.scores.16S$"C1C2C3" <- meta.tax$C1C2C3
+
+ggplot(data = data.scores.16S, aes(x = NMDS1, y = NMDS2))  +
+  theme_classic() +
+  geom_point(data = data.scores.16S,
+             aes(shape = Sediment_Layer, , color = Geological_Age), size = 4) +
+  geom_segment(aes(x = 0, y = 0, xend = NMDS1, yend = NMDS2), 
+               data = Cred.en, size =1, colour = "darkgray", 
+               arrow = arrow(length = unit(0.2,"cm"))) +
+  geom_text_repel(data = Cred.en, aes(x = NMDS1, y = NMDS2), 
+                  colour = "black", size = 3, label = Cred.en$Variable, 
+                  direction = "both", max.overlaps = 20, fontface = "bold") +
+  scale_shape_manual(name = "Sediment Layer", values = c(15,1,16,17,18)) +
+  scale_color_scico(breaks = c(0,.2,.4,.6,.8,1), direction = 1, 
+                    name = "Geological\nAge (Myr)", palette = "vik") +
+  theme(legend.position = "right") +
+  geom_text_repel(mapping = aes(label = Depth, fontface = "bold"), 
+                  size = 3, color = "red", direction = "both")
+
+###Unifrac
+set.seed(10000)
+wuni_gom <- ps_gom_rare %>% 
+  ordinate(method = "NMDS", distance = "wunifrac")
+print(wuni_gom)
+
+ps_gom_rare <- ps_gom_rare %>% speedyseq::mutate_sample_data(smtzloc = 
+                                                               factor(smtzloc, levels = c("ASMTZ", "SMTZ", "BSMTZ", 
+                                                                                          "GHSZ", "HYDRATE")))
+ps_gom_rare %>% 
+  plot_ordination(wuni_gom, shape = "smtzloc", color = "depth_cat") +
+  theme_classic() + geom_point(size = 2.5) + scale_fill_hue(l=40) +
+  labs(title = "", color = "Depth \nCategory") +   
+  scale_shape_manual(name = "Sediment \nLayer", 
+                     values = c(15,1,16,17,18)) +
+  scale_color_manual(values = c("#7570B3", "#1B9E77")) +
+  stat_ellipse(aes(group = depth_cat), type = "norm") +
+  geom_text_repel(mapping = aes(label = round(depthoncenter), fontface = "bold"), 
+                  size = 3, color = "black", direction = "both", max.overlaps = 2)
+
+
+###Statistcal tests with communities 
+
+###PERMANOVAs
+ps_gom_bray_dist <- distance(ps_gom_rare, method = "bray")
+ps_gom_w_uni_dist <- distance(ps_gom_rare, method = "wunifrac")
+meta <- data.frame(ps_gom_rare@sam_data)
+#Bray
+adonis2(ps_gom_bray_dist~smtzloc, data = meta) #0.039*
+adonis2(ps_gom_bray_dist~depth_cat, data = meta) #0.001**
+adonis2(ps_gom_bray_dist~sand, data = meta) #0.015*
+adonis2(ps_gom_bray_dist~lithofacies, data = meta) #0.001**
+adonis2(ps_gom_bray_dist~methSaturation, data = meta) #0.002*
+#
+#Weighted UniFrac
+adonis2(ps_gom_w_uni_dist~smtzloc, data = meta) #0.05
+adonis2(ps_gom_w_uni_dist~depth_cat, data = meta) #0.0.007*
+adonis2(ps_gom_w_uni_dist~sand, data = meta) #0.074
+adonis2(ps_gom_w_uni_dist~lithofacies, data = meta) #0.233
+adonis2(ps_gom_w_uni_dist~methSaturation, data = meta) #0.008**
+#
+cor.test(meta$depthoncenter, meta$geoAge, method = "pearson") #sig
+cor.test(meta$depthoncenter, meta$porosity, method = "pearson") #-sig
+cor.test(meta$geoAge, meta$porosity, method = "pearson") #-sig
+
+###Alpha-diversity with age 
+gom_div <- phyloseq::estimate_richness(ps_gom_rare, split = TRUE, 
+                                       measures = c("Observed", "Shannon"))
+meta_gom_rare <- data.frame(ps_gom_rare@sam_data)
+meta_gom_rare$"Observed" <- gom_div$Observed
+meta_gom_rare$"Shannon" <- gom_div$Shannon
+meta_gom_rare$depth_cat <- factor(meta_gom_rare$depth_cat, levels = c("Shallow", "Deep"))
+
+
+meta_gom_rare %>% ggplot(aes(y = Observed, x = geoAge, 
+                             color = depth_cat)) +
+  theme_classic() + geom_point(size = 2) + 
+  labs(y = "ASV Richness", x = "Geological Age (Myr)") +
+  geom_smooth(method = "loess", 
+              formula = y~x, se = F,
+              fullrange = T, color = "red", size = .5) +
+  scale_color_manual(values = c("#7570B3", "#1B9E77"), name = "Depth \nCategory") +
+  geom_text_repel(mapping = aes(label = round(depthoncenter), fontface = "bold"), 
+                  size = 3, color = "black", direction = "both")
+  
+
+meta_gom_rare %>% ggplot(aes(y = Shannon, x = geoAge, 
+                             color = depth_cat)) +
+  theme_classic() + geom_point(size = 2) + 
+  labs(y = "Shannon Diversity", x = "Geological Age (Myr)") +
+  geom_smooth(method = "loess", 
+              formula = y~x, se = F,
+              fullrange = T, color = "red", size = .5) +
+  scale_color_manual(values = c("#7570B3", "#1B9E77"), name = "Depth \nCategory") +
+  geom_text_repel(mapping = aes(label = round(depthoncenter), fontface = "bold"), 
+                  size = 3, color = "black", direction = "both")
+  
+
+cor.test(meta_gom_rare$Observed, meta_gom_rare$geoAge, "spearman", alternative = "less")
+cor.test(meta_gom_rare$Shannon, meta_gom_rare$geoAge, "spearman", alternative = "less")
+
+
+###GAM Model
+gom_GAM_dat <- data.frame(ps_gom_gam@sam_data)
+
+gom_GAM_dat$"is_old" <- gom_GAM_dat$geoAge > 0.34
+gom_GAM_dat <- gom_GAM_dat %>% dplyr::rename(geo_age_cat = is_old)
+gom_GAM_dat <- gom_GAM_dat %>% mutate(geo_age_cat = str_replace(geo_age_cat, "TRUE", "Ancient"), 
+                                      geo_age_cat = str_replace(geo_age_cat, "FALSE", "Young"))
+
+gom_GAM_dat$geo_age_cat <- factor(gom_GAM_dat$geo_age_cat, levels = c("Young", "Ancient"))
+
+GAM_mod <- mgcv::gam(data = gom_GAM_dat, geo_age_cat ~ 
+                       TN + TC + s(TS), family = binomial)
+
+null_GAM_mod <- glm(data = gom_GAM_dat, geo_age_cat ~ 1, family = binomial)
+
+summary(GAM_mod)
+lmtest::lrtest(null_GAM_mod, GAM_mod)
+
+
+
+###MaAsLin2
+ps_gom_gen_bact <- ps_gom %>% subset_taxa(Kingdom == "Unknown Bacteria") %>% tax_filter()
+ps_gom_gen_arch <- ps_gom %>% subset_taxa(Kingdom == "Unknown Archaea") %>% tax_filter()
+bact_taxa <- data.frame(ps_gom_gen_bact@tax_table)$Species
+arch_taxa <- data.frame(ps_gom_gen_arch@tax_table)$Species
+genus_mat_bact <- data.frame(t(otu_table(ps_gom_gen_bact)))
+genus_mat_arch <- data.frame(t(otu_table(ps_gom_gen_arch)))
+colnames(genus_mat_bact) <- bact_taxa
+colnames(genus_mat_arch) <- arch_taxa
+maaslin_dat <- data.frame(ps_gom_gen@sam_data)
+
+Maaslin2(input_data = genus_mat_bact, input_metadata = maaslin_dat, 
+         output = "GOM_genus_MaAsLin2_final_bact",
+         fixed_effects = c("geoAge", "smtzloc"), 
+         random_effects = "coretype", 
+         reference = "smtzloc,BSMTZ")
+
+Maaslin2(input_data = genus_mat_arch, input_metadata = maaslin_dat, 
+         output = "GOM_genus_MaAsLin2_final_arch",
+         fixed_effects = c("geoAge", "smtzloc"), 
+         random_effects = "coretype", 
+         reference = "smtzloc,BSMTZ")
+
+
+
+###SRBs and ANMEs
+methane_class <- c("ANME-1", "Methanosarcinia", "Methanocellia", "Bathyarchaeia")
+methane_order <- c("Methanofastidiosales", "Methanobacteriales", "Methanomassiliicoccales", "Desulfatiglandales")
+methane_genus <- c("Candidatus_Dichloromethanomonas", "SEEP-SRB1")
+
+ps_gom_notree <- phyloseq(otu_table(ps_gom_rare@otu_table), 
+                          tax_table(ps_gom_rare@tax_table), 
+                          sample_data(ps_gom_rare@sam_data))
+
+ps_methane_class <- ps_gom_notree %>% subset_taxa(Class %in% methane_class)
+ps_methane_order <- ps_gom_notree %>% subset_taxa(Order %in% methane_order)
+ps_methane_genus <- ps_gom_notree %>% subset_taxa(Genus %in% methane_genus)
+
+methane_ps <- merge_phyloseq(ps_methane_class, ps_methane_order, ps_methane_genus) %>% tax_fix()
+methane_met <- data.frame(methane_ps@sam_data)
+methane_ps <- prune_samples(sample_sums(methane_ps) > 0, 
+                            methane_ps)
+
+ANME_classes <- c("Methanosarcinia", "ANME-1", "Desulfobacteria")
+methane_ps_shallow <- subset_samples(methane_ps, depth_cat == "Shallow") %>% 
+  subset_taxa(Class %in% ANME_classes) %>% 
+  tax_filter() %>% tax_fix()
+
+methane_ps_shallow <- methane_ps_shallow %>% 
+  mutate_sample_data(layer = 
+                       factor(smtzloc, levels = c("ASMTZ", "SMTZ", "BSMTZ")))
+methane_ps_shallow <- prune_samples(sample_sums(methane_ps_shallow) > 0, 
+                                    methane_ps_shallow)
+shallow_depths <- as.character(sort(as.numeric(colnames(methane_ps_shallow@otu_table))))
+methane_ps_shallow %>% tax_fix() %>% comp_barplot(tax_level = "Species", n_taxa = 41,
+                                    sample_order = rev(shallow_depths)) + coord_flip()
+
+ANME_SRB_sums <- sample_sums(methane_ps_shallow)
+100*(ANME_SRB_sums/1208) #Gives rel. abundances 
+
+
+
+
+
+
